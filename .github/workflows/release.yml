@@ -1,0 +1,293 @@
+name: release
+
+# 触发方式：
+#   1) push 形如 v1.0.0 的 tag —— 自动构建并发布 Release
+#   2) 手动触发（workflow_dispatch）—— 填版本号，自动创建 v<版本号> tag 并发布
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（不带 v，如 1.0.0）；将创建 v<版本号> 标签并发布'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  # 上游预编译 Luanti 无头服务端（Linux x86_64 / aarch64）
+  UPSTREAM_REPO: ROllerozxa/luantiserver
+
+jobs:
+  linux:
+    name: linux-${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            upstream_arch: x86_64
+          - arch: arm64
+            upstream_arch: aarch64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build frontend
+        run: |
+          cd web
+          npm ci
+          npm run build
+
+      - name: Resolve bundled Luanti server
+        id: luanti
+        env:
+          ARCH: ${{ matrix.upstream_arch }}
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${UPSTREAM_REPO}/releases/latest"
+          json="$(curl -fsSL -H 'Accept: application/vnd.github+json' -H 'User-Agent: luanti-panel-ci' "$api")"
+          tag="$(printf '%s' "$json" | jq -r '.tag_name')"
+          url="$(printf '%s' "$json" | jq -r --arg suffix "-${ARCH}.tar.gz" \
+            '.assets[] | select(.name | endswith($suffix)) | .browser_download_url' | head -n1)"
+          if [ -z "${url:-}" ] || [ "$url" = "null" ]; then
+            echo "::error::上游最新发布（${tag}）中没有 ${ARCH} 的 .tar.gz 资产"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "内置 Luanti 服务端：${tag} <- ${url}"
+
+      - name: Stage Luanti runtime into data/bin
+        env:
+          URL: ${{ steps.luanti.outputs.url }}
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/luanti && mkdir -p /tmp/luanti data/bin
+          curl -fsSL -o /tmp/luanti/server.tar.gz "$URL"
+          tar -xzf /tmp/luanti/server.tar.gz -C /tmp/luanti
+
+          # 上游布局：<root>/bin/luantiserver + <root>/{builtin,minetest.conf.example,...}
+          bin="$(find /tmp/luanti -type f -name luantiserver | head -n1)"
+          if [ -z "${bin:-}" ]; then
+            echo "::error::压缩包内未找到 luantiserver"
+            exit 1
+          fi
+          root="$(dirname "$(dirname "$bin")")"
+
+          # 与面板内置下载器保持一致的落盘布局：除 bin/ 外的运行时放到 data/bin，
+          # 由面板启动实例时镜像 builtin/ 等目录到实例根。
+          (cd "$root" && for e in *; do
+            [ "$e" = "bin" ] || cp -a "$e" "$GITHUB_WORKSPACE/data/bin/"
+          done)
+          install -m 0755 "$bin" data/bin/luantiserver
+
+          test -f data/bin/minetest.conf.example || echo "::warning::上游包内缺少 minetest.conf.example"
+          test -d data/bin/builtin || { echo "::error::上游包内缺少 builtin/（实例无法启动）"; exit 1; }
+          chmod -R a+rX data/bin
+          du -sh data/bin && ls -la data/bin
+
+      - name: Stamp version
+        env:
+          REF: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+        run: |
+          set -euo pipefail
+          printf '"%s"\n' "${REF#v}" > cmd/panel/version.txt
+          cat cmd/panel/version.txt
+
+      - name: Build panel
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.arch }} \
+            go build -trimpath -ldflags "-s -w" -o dist/panel ./cmd/panel
+          file dist/panel
+
+      - name: Package
+        env:
+          REF: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+        run: |
+          set -euo pipefail
+          ver="${REF#v}"
+          name="luanti-panel_${ver}_linux_${{ matrix.arch }}"
+          rm -rf out && mkdir -p "out/${name}"
+          cp dist/panel README.md LICENSE "out/${name}/"
+          cp -a data "out/${name}/data"
+          chmod 0755 "out/${name}/panel"
+          tar --owner=0 --group=0 --numeric-owner -C out -czf "out/${name}.tar.gz" "${name}"
+          ls -lh "out/${name}.tar.gz"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-linux-${{ matrix.arch }}
+          path: out/*.tar.gz
+          if-no-files-found: error
+
+  windows:
+    name: windows-amd64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build frontend
+        run: |
+          cd web
+          npm ci
+          npm run build
+
+      - name: Stamp version
+        env:
+          REF: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+        run: |
+          set -euo pipefail
+          printf '"%s"\n' "${REF#v}" > cmd/panel/version.txt
+
+      - name: Build panel
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 \
+            go build -trimpath -ldflags "-s -w" -o dist/panel.exe ./cmd/panel
+          file dist/panel.exe
+
+      - name: Package
+        env:
+          REF: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+        run: |
+          set -euo pipefail
+          ver="${REF#v}"
+          name="luanti-panel_${ver}_windows_amd64"
+          rm -rf out && mkdir -p "out/${name}/data/bin"
+          cp dist/panel.exe README.md LICENSE "out/${name}/"
+
+          # 上游只发布 Linux 版服务端：Windows 包内明确说明需要自备二进制
+          cat > "out/${name}/README-Windows.txt" <<'EOF'
+          Luanti Web Panel (Windows)
+
+          本包只包含面板本体 panel.exe，不含 Luanti 服务端二进制：
+          上游 ROllerozxa/luantiserver 仅发布 Linux（x86_64 / aarch64）版本。
+
+          首次使用：
+            1. 把 Windows 版 luantiserver.exe 放到 data\bin\luantiserver.exe，
+               或在面板「设置 -> 手动二进制路径」中填写已有可执行文件的绝对路径；
+            2. 双击或在终端运行：panel.exe -addr :8080 -data .\data
+            3. 初始管理员密码见控制台输出与 data\initial_admin_password.txt
+
+          注意：Windows 缺少 SIGTERM 与进程组语义，停止实例时依赖 panel_bridge 的 /shutdown
+          命令；若 bridge 未就绪会被强制结束，可能丢失未保存的世界数据。生产环境请使用
+          Linux（或 WSL2 / Docker）。详见 README 的“Windows 部署现状与不足”。
+          EOF
+
+          if command -v zip >/dev/null 2>&1; then
+            (cd out && zip -qr "${name}.zip" "${name}")
+          else
+            python3 -m zipfile -c "out/${name}.zip" "out/${name}"
+          fi
+          ls -lh "out/${name}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-windows-amd64
+          path: out/*.zip
+          if-no-files-found: error
+
+  publish:
+    name: publish
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Build release notes
+        id: notes
+        run: |
+          set -euo pipefail
+          ref="${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}"
+          ver="${ref#v}"
+          tag="v${ver}"
+
+          api="https://api.github.com/repos/${UPSTREAM_REPO}/releases/latest"
+          upstream="$(curl -fsSL -H 'Accept: application/vnd.github+json' -H 'User-Agent: luanti-panel-ci' "$api" | jq -r '.tag_name')"
+
+          {
+            echo "## Luanti Web Panel ${tag}"
+            echo
+            echo "内置 Luanti 无头服务端：**${upstream}**（来自 ${UPSTREAM_REPO}，开箱即用，无需联网下载）"
+            echo
+            echo "### Linux 开箱即用（推荐）"
+            echo
+            echo '```bash'
+            echo "curl -fLO https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}/luanti-panel_${ver}_linux_amd64.tar.gz"
+            echo "curl -fLO https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}/SHA256SUMS.txt"
+            echo "sha256sum -c SHA256SUMS.txt --ignore-missing"
+            echo
+            echo "sudo mkdir -p /opt/luanti-panel"
+            echo "sudo tar -xzf luanti-panel_${ver}_linux_amd64.tar.gz -C /opt/luanti-panel --strip-components=1"
+            echo "# 数据与内置服务端都在 /opt/luanti-panel/data，可直接："
+            echo "cd /opt/luanti-panel && ./panel -addr 127.0.0.1:8080 -data ./data"
+            echo '```'
+            echo
+            echo "首次启动会打印初始管理员密码。arm64 机器把文件名中的 \`amd64\` 换成 \`arm64\`。"
+            echo "完整部署（systemd、反代、防火墙）见仓库 README。"
+            echo
+            echo "### 资产"
+            echo
+            echo "| 文件 | 说明 |"
+            echo "| --- | --- |"
+            echo "| \`luanti-panel_${ver}_linux_amd64.tar.gz\` | Linux x86_64，内置 luantiserver（${upstream}） |"
+            echo "| \`luanti-panel_${ver}_linux_arm64.tar.gz\` | Linux aarch64，内置 luantiserver（${upstream}） |"
+            echo "| \`luanti-panel_${ver}_windows_amd64.zip\` | Windows x64 面板本体（需自备服务端二进制，见包内说明） |"
+            echo "| \`SHA256SUMS.txt\` | 全部资产的 SHA-256 校验和 |"
+          } > notes.md
+
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          cat notes.md
+
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd artifacts
+          sha256sum *.tar.gz *.zip > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.notes.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "Luanti Web Panel $TAG" --notes-file notes.md
+          else
+            gh release create "$TAG" --title "Luanti Web Panel $TAG" --notes-file notes.md \
+              --target "$GITHUB_SHA"
+          fi
+          gh release upload "$TAG" artifacts/* --clobber
+          echo "已发布：$(gh release view "$TAG" --json url -q .url)"

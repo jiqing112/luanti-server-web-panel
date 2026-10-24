@@ -8,6 +8,8 @@
 ![Go](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go&logoColor=white)
 ![Svelte](https://img.shields.io/badge/Svelte-5-FF3E00?logo=svelte&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-green)
+![release](https://img.shields.io/github/v/release/jiqing112/luanti-server-web-panel?display_name=tag)
+![release build](https://img.shields.io/github/actions/workflow/status/jiqing112/luanti-server-web-panel/release.yml?label=release)
 
 ---
 
@@ -49,7 +51,44 @@ RUN_IN_PLACE 目录、托管进程、抓取日志、解析玩家活动，并通�
 - **Node.js 18+**（仅构建前端时需要；仓库已附带构建好的 `web/dist`）
 - 出网访问 `api.github.com` 与 `content.luanti.org`（下载服务端二进制 / 模组；不可达时可手动放置）
 
-### Linux 部署（详细步骤）
+### 从 Release 部署（推荐，开箱即用）
+
+每个 Release 的 Linux 包**已内置对应架构的 Luanti 无头服务端**（来自
+`ROllerozxa/luantiserver`，含 `builtin/` 运行时与 `minetest.conf.example`），
+解压即用，无需联网下载二进制。
+
+```bash
+# 1) 下载并校验（1.0.0 换成 Releases 页显示的最新版本）
+VER=1.0.0
+BASE=https://github.com/jiqing112/luanti-server-web-panel/releases/download/v${VER}
+curl -fLO ${BASE}/luanti-panel_${VER}_linux_amd64.tar.gz   # arm64 机器用 _linux_arm64
+curl -fLO ${BASE}/SHA256SUMS.txt
+sha256sum -c SHA256SUMS.txt --ignore-missing
+
+# 2) 解压安装（包内结构：panel + data/bin 内置服务端 + README/LICENSE）
+sudo useradd -r -m -d /opt/luanti-panel -s /usr/sbin/nologin luanti || true
+sudo mkdir -p /opt/luanti-panel
+sudo tar -xzf luanti-panel_${VER}_linux_amd64.tar.gz -C /opt/luanti-panel --strip-components=1
+sudo chown -R luanti:luanti /opt/luanti-panel
+
+# 3) 首次运行（直接用包内 data/，服务端二进制已在 data/bin）
+cd /opt/luanti-panel
+sudo -u luanti ./panel -addr 127.0.0.1:8080 -data ./data
+```
+
+首次启动打印初始管理员密码（同时写入 `data/initial_admin_password.txt`）。登录后：
+改密码 → **设置**页确认已识别内置二进制版本 → **刷新配置 schema** → 创建实例 →
+防火墙放行实例的 UDP 端口 → 启动。
+
+> 想把数据放到 `/var/lib`：`sudo cp -a data /var/lib/luanti-panel`，之后用
+> `-data /var/lib/luanti-panel` 启动（`-data` 指向的目录必须包含 `bin/`）。
+>
+> **升级**：下载新 Release，覆盖 `panel` 与 `data/bin`，**保留** `panel.db` 与 `instances/`。
+>
+> **Windows 包只含 `panel.exe`**（上游不发布 Windows 服务端），用法见包内
+> `README-Windows.txt` 与下文「Windows 部署现状与不足」。
+
+### 从源码构建部署（详细步骤）
 
 #### 1. 准备系统用户与目录
 
@@ -338,7 +377,45 @@ login rate limiting and audit log · CPU/RSS sampling.
 - **Node.js 18+** (frontend only; a prebuilt `web/dist` is committed)
 - Outbound access to `api.github.com` and `content.luanti.org` (or place binaries/mods manually)
 
-### Deploy on Linux
+### Deploy from a release (recommended, batteries included)
+
+Every Linux asset already bundles the matching **Luanti headless server** from
+`ROllerozxa/luantiserver` (including the `builtin/` runtime and `minetest.conf.example`),
+so first run needs no binary download at all.
+
+```bash
+# 1) download and verify (replace 1.0.0 with the latest tag)
+VER=1.0.0
+BASE=https://github.com/jiqing112/luanti-server-web-panel/releases/download/v${VER}
+curl -fLO ${BASE}/luanti-panel_${VER}_linux_amd64.tar.gz   # use _linux_arm64 on arm64
+curl -fLO ${BASE}/SHA256SUMS.txt
+sha256sum -c SHA256SUMS.txt --ignore-missing
+
+# 2) unpack (layout: panel + data/bin with the bundled server + README/LICENSE)
+sudo useradd -r -m -d /opt/luanti-panel -s /usr/sbin/nologin luanti || true
+sudo mkdir -p /opt/luanti-panel
+sudo tar -xzf luanti-panel_${VER}_linux_amd64.tar.gz -C /opt/luanti-panel --strip-components=1
+sudo chown -R luanti:luanti /opt/luanti-panel
+
+# 3) first run (the bundled server already lives in data/bin)
+cd /opt/luanti-panel
+sudo -u luanti ./panel -addr 127.0.0.1:8080 -data ./data
+```
+
+The first start prints the initial admin credential and stores it in
+`data/initial_admin_password.txt`. Then: change it → check that **Settings** shows the bundled
+server version → **Refresh config schema** → create an instance → open its UDP port → start.
+
+> To keep data under `/var/lib`: `sudo cp -a data /var/lib/luanti-panel` and run with
+> `-data /var/lib/luanti-panel` (the directory passed to `-data` must contain `bin/`).
+>
+> **Upgrade:** unpack a newer release over `panel` and `data/bin`, keep `panel.db` and
+> `instances/` untouched.
+>
+> **The Windows asset contains `panel.exe` only** (no upstream Windows server); see
+> `README-Windows.txt` in the zip and the Windows section below.
+
+### Build and deploy from source
 
 ```bash
 # 1) service user + dirs
@@ -512,7 +589,45 @@ WebSocket ログ配信と Web コンソール · `minetest.conf.example` から�
 - **Node.js 18+**（フロントエンドのビルド時のみ。ビルド済み `web/dist` を同梱）
 - `api.github.com` と `content.luanti.org` への外向き通信（不可の場合は手動配置）
 
-### Linux へのデプロイ
+### リリースからデプロイ（推奨・すぐ使える）
+
+Linux 向けの各アセットには、対応アーキテクチャの **Luanti ヘッドレスサーバー**
+（`ROllerozxa/luantiserver`、`builtin/` ランタイムと `minetest.conf.example` を含む）が
+同梱されています。初回起動時にバイナリをダウンロードする必要はありません。
+
+```bash
+# 1) ダウンロードと検証（1.0.0 は Releases の最新タグに置換）
+VER=1.0.0
+BASE=https://github.com/jiqing112/luanti-server-web-panel/releases/download/v${VER}
+curl -fLO ${BASE}/luanti-panel_${VER}_linux_amd64.tar.gz   # arm64 は _linux_arm64
+curl -fLO ${BASE}/SHA256SUMS.txt
+sha256sum -c SHA256SUMS.txt --ignore-missing
+
+# 2) 展開（構成: panel + data/bin の同梱サーバー + README/LICENSE）
+sudo useradd -r -m -d /opt/luanti-panel -s /usr/sbin/nologin luanti || true
+sudo mkdir -p /opt/luanti-panel
+sudo tar -xzf luanti-panel_${VER}_linux_amd64.tar.gz -C /opt/luanti-panel --strip-components=1
+sudo chown -R luanti:luanti /opt/luanti-panel
+
+# 3) 初回起動（同梱サーバーは data/bin にあります）
+cd /opt/luanti-panel
+sudo -u luanti ./panel -addr 127.0.0.1:8080 -data ./data
+```
+
+初回起動時に管理者の初期資格情報が表示され、`data/initial_admin_password.txt` にも
+保存されます。その後: 資格情報の変更 → **設定** で同梱サーバーのバージョンを確認 →
+**設定スキーマを更新** → インスタンス作成 → UDP ポート開放 → 起動。
+
+> データを `/var/lib` に置く場合: `sudo cp -a data /var/lib/luanti-panel` として
+> `-data /var/lib/luanti-panel` で起動します（`-data` のディレクトリに `bin/` が必要）。
+>
+> **アップグレード:** 新しいリリースを展開して `panel` と `data/bin` を上書きし、
+> `panel.db` と `instances/` はそのまま残します。
+>
+> **Windows 版は `panel.exe` のみ**（上流に Windows サーバーがないため）。zip 内の
+> `README-Windows.txt` と後述の Windows セクションを参照してください。
+
+### ソースからビルドしてデプロイ
 
 ```bash
 # 1) サービスユーザーとディレクトリ
