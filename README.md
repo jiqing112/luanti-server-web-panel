@@ -338,6 +338,16 @@ go build -o mock-luanti ./tools/mock-luanti
 # - 实现 bridge 协议（/status /list /grant /privs /kick /shutdown 等）
 ```
 
+### 发布新版本（维护者）
+
+```bash
+git tag -a v1.2.3 -m "v1.2.3" && git push origin v1.2.3   # 触发 .github/workflows/release.yml
+```
+
+工作流会同时构建 linux/amd64、linux/arm64（各自内置上游最新 Luanti 服务端）与
+windows/amd64，并创建/更新对应的 GitHub Release（含 `SHA256SUMS.txt`）。
+也可在 Actions 页手动运行 `release` 工作流并填写版本号（会自动建标签）。
+
 ### 许可
 
 MIT，见 [LICENSE](LICENSE)。
@@ -554,6 +564,17 @@ cd web && npm run dev               # Vite on 5173, proxies /api to :8080
 go build -o mock-luanti ./tools/mock-luanti   # fake server for end-to-end testing
 ```
 
+### Cutting a release (maintainers)
+
+```bash
+git tag -a v1.2.3 -m "v1.2.3" && git push origin v1.2.3   # triggers .github/workflows/release.yml
+```
+
+The workflow builds linux/amd64 and linux/arm64 (each bundling the latest upstream Luanti
+server) plus windows/amd64, then creates or updates the matching GitHub Release with
+`SHA256SUMS.txt`. You can also run the `release` workflow manually from the Actions tab and
+provide a version number (the tag is created for you).
+
 MIT — see [LICENSE](LICENSE).
 
 ---
@@ -757,5 +778,15 @@ go test ./...                       # プロセスライフサイクルの回帰
 cd web && npm run dev               # Vite 5173（/api は :8080 へプロキシ）
 go build -o mock-luanti ./tools/mock-luanti   # E2E 用の疑似サーバー
 ```
+
+### リリースの作成（メンテナ向け）
+
+```bash
+git tag -a v1.2.3 -m "v1.2.3" && git push origin v1.2.3   # .github/workflows/release.yml を起動
+```
+
+ワークフローは linux/amd64・linux/arm64（それぞれ上流の最新 Luanti サーバーを同梱）と
+windows/amd64 をビルドし、対応する GitHub Release を作成/更新します（`SHA256SUMS.txt` 付き）。
+Actions 画面から `release` を手動実行してバージョン番号を指定することもできます。
 
 MIT — [LICENSE](LICENSE) を参照。
